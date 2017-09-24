@@ -65,7 +65,7 @@ data ScanHeader = ScanHeader {
   approxHigh      :: Word8,
   approxLow       :: Word8
   } deriving (Show)
-             
+
 data DecodeJpegCtx = DecodeJpegCtx {
   hOutput      :: Handle,
   state        :: DecodeJpegState,
@@ -89,7 +89,7 @@ data DecodeJpegCtxMember = CtxhOutput Handle |
                            CtxScanHeader ScanHeader |
                            CtxDecodeImage (Array (Int, Int) RGB) |
                            CtxFh FrameHeader
-                           
+
 initDecodeJpegCtx output =
   let
     emptyCodes      = array (1,16) [(i,V.empty)|i<-[1..16]]

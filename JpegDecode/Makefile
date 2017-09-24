@@ -19,4 +19,4 @@ jpgedecoder: $(SRCS)
 	$(GHC) -o $(NAME) $(SRCS)
 
 clean:
-	rm *~ $(NAME) *.o *.hi
+	rm -rf *~ $(NAME) *.o *.hi

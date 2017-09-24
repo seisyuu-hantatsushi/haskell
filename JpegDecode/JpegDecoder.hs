@@ -22,6 +22,7 @@ import Data.Maybe
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Unsafe as BSU
+import qualified Data.ByteString.Char8 as BSC
 
 import JpegDecoder.InternalDefs
 import JpegDecoder.Tiff
@@ -42,7 +43,7 @@ searchSOI = do
              ctx <- getContext
              putContext $ updateDecodeJpegCtx ctx (CtxState SearchMarker)
              decodeJpegIter SearchMarker )
-    else (do 
+    else (do
              ctx <- getContext
              decodeJpegIter (state ctx))
 
@@ -57,7 +58,7 @@ parseSOFIter compStr comps =
         tq = (fromIntegral $ BSU.unsafeIndex compStr 2) :: Word8
     in
      parseSOFIter (BS.drop 3 compStr) (V.snoc comps (FrameHeaderComponent c h v tq))
-        
+
 
 parseSOF0 :: ByteStreamDecoderT DecodeJpegCtx String IO ()
 parseSOF0 = do
@@ -117,8 +118,8 @@ parseJFIF = do
         ctx <- getContext
         decodeJpegIter (state ctx)
       | (xt /= 0) && (yt /= 0) = throwError "need impliment decode thumnail"
-      | otherwise = throwError "invalid value"
-             
+      | otherwise = throwError "invalid value in JFIF"
+
 parseAPP0 :: ByteStreamDecoderT DecodeJpegCtx String IO ()
 parseAPP0 = do
   len <- getWord16be
@@ -139,6 +140,7 @@ parseAPP1 :: ByteStreamDecoderT DecodeJpegCtx String IO ()
 parseAPP1 = do
   len <- getWord16be
   len <- checkValid len
+  liftIO $ putStrLn $ "Maker:APP1(Exif),len="++(show len)
   remain <- BSD.length
   let exiflen = fromIntegral $ len - 2 :: Int64
   if remain < exiflen
@@ -148,12 +150,31 @@ parseAPP1 = do
              parseTIFF exif
              ctx <- getContext
              decodeJpegIter (state ctx))
-  
+
+parseAPP2 :: ByteStreamDecoderT DecodeJpegCtx String IO ()
+parseAPP2 = do
+  len <- getWord16be
+  len <- checkValid len
+  liftIO $ putStrLn $ "Maker:APP2(ICC Profile),len="++(show len)
+  BSD.drop $ fromIntegral (len-2)
+  ctx <- getContext
+  decodeJpegIter (state ctx)
+
 parseAPP13 :: ByteStreamDecoderT DecodeJpegCtx String IO ()
 parseAPP13 = do
   len <- getWord16be
   len <- checkValid len
-  liftIO $ putStrLn $ "Maker:APP13,len="++(show len)
+  liftIO $ putStrLn $ "Maker:APP13(PhotoShop Resource Data),len="++(show len)
+  BSD.drop $ fromIntegral (len-2)
+  ctx <- getContext
+  decodeJpegIter (state ctx)
+
+parseCOM :: ByteStreamDecoderT DecodeJpegCtx String IO ()
+parseCOM = do
+  len <- getWord16be
+  len <- checkValid len
+  comment <- BSD.take $ fromIntegral (len-2)
+  liftIO $ putStrLn $ "Maker:COM,len="++(show len)++","++ (BSC.unpack comment)
   BSD.drop $ fromIntegral (len-2)
   ctx <- getContext
   decodeJpegIter (state ctx)
@@ -167,12 +188,14 @@ parseMarker code =
     0xDA -> parseSOS decodeJpegIter
     0xE0 -> parseAPP0
     0xE1 -> parseAPP1
+    0xE2 -> parseAPP2
     0xED -> parseAPP13
+    0xFE -> parseCOM
     _    -> do
       ctx <- getContext
       --liftIO $ putStrLn $ show ctx 
       throwError $ "unknown maker code: 0x" ++ (showHex code "")
-    
+
 searchMarker :: ByteStreamDecoderT DecodeJpegCtx String IO ()
 searchMarker = do
   liftIO $ putStrLn "searchMarker"
@@ -186,7 +209,7 @@ searchMarker = do
     else (do
              liftIO $ putStrLn "find no marker"
              searchMarker )
-         
+
 decodeJpegIter :: DecodeJpegState -> ByteStreamDecoderT DecodeJpegCtx String IO ()
 decodeJpegIter state = case state of
   SearchSOI -> searchSOI
@@ -195,7 +218,7 @@ decodeJpegIter state = case state of
   DecodeExit -> (do
                     liftIO $ putStrLn "Exit Decoder"
                     return ())
-  
+
 decodeJpeg :: ByteStreamDecoderT DecodeJpegCtx String IO ()
 decodeJpeg = do
   ctx <- getContext

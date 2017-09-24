@@ -56,4 +56,6 @@ parseTIFF exif = do
   case endian of
     0x4949 -> parseTIFFle (BS.drop 6 exif)
     0x4D4D -> parseTIFFbe (BS.drop 6 exif)
-    _      -> throwError "invalid value"
+    _      -> do
+      liftIO $ putStrLn $ "Adobe XMP"
+      return ()

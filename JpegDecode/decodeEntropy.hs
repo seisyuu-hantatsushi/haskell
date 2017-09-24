@@ -19,7 +19,7 @@ import Data.Binary.ByteStreamDecoder as BSD
 
 import JpegDecoder.InternalDefs
 
-import Debug.Trace 
+import Debug.Trace
 
 data DecodeMCUContext = DecodeMCUContext {
   remainBits :: (Int, Word8),
@@ -28,6 +28,24 @@ data DecodeMCUContext = DecodeMCUContext {
   crs  :: V.Vector (Array (Int, Int) Word8),
   dctMatrix :: Array (Int,Int) Int
   }
+
+zigzagTable :: V.Vector (Int, Int)
+zigzagTable =
+  V.fromList [(0,0),
+              (1,0),(0,1),
+              (0,2),(1,1),(2,0),
+              (3,0),(2,1),(1,2),(0,3),
+              (0,4),(1,3),(2,2),(3,1),(4,0),
+              (5,0),(4,1),(3,2),(2,3),(1,4),(0,5),
+              (0,6),(1,5),(2,4),(3,3),(4,2),(5,1),(6,0),
+              (7,0),(6,1),(5,2),(4,3),(3,4),(2,5),(1,6),(0,7),
+              (1,7),(2,6),(3,5),(4,4),(5,3),(6,2),(7,1),
+              (7,2),(6,3),(5,4),(4,5),(3,6),(2,7),
+              (3,7),(4,6),(5,5),(6,4),(7,3),
+              (7,4),(6,5),(5,6),(4,7),
+              (5,7),(6,6),(7,5),
+              (7,6),(6,7),
+              (7,7)]
 
 showHex :: Int -> String
 showHex n = iter n ""
@@ -68,24 +86,23 @@ getBits n = iter 0 0
                --liftIO $ putStr $ (show b)
                iter (i+1) ((bits `unsafeShiftL` 1) .|. b))
       else return bits
-  
 
 getNumOfComps :: DecodeJpegCtx -> Int
-getNumOfComps ctx = V.length $ comps $ frameHeader ctx  
+getNumOfComps ctx = V.length $ comps $ frameHeader ctx
 
 getMaxOfComp :: (FrameHeaderComponent -> Word8) -> V.Vector FrameHeaderComponent -> Int
 getMaxOfComp selector fhcs = iter fhcs 0
   where
-    iter fhcs max = 
+    iter fhcs max =
       if (V.null fhcs)
       then fromIntegral max
       else
         let
           h = selector $ V.head fhcs
           newMax = if (max < h) then h else max
-        in 
+        in
          iter (V.drop 1 fhcs) newMax
-         
+
 getMaxOfH :: V.Vector FrameHeaderComponent -> Int
 getMaxOfH fhcs = getMaxOfComp fhcH fhcs
 
@@ -93,8 +110,8 @@ getMaxOfV :: V.Vector FrameHeaderComponent -> Int
 getMaxOfV fhcs = getMaxOfComp fhcV fhcs
 
 getBlocks :: Int -> Int
---getBlocks n = (n `unsafeShiftR` 3) + if ( (n .&. 0x07) > 0 ) then 1 else 0 
-getBlocks n = (n `div` 8) + if ( (n `mod` 8) > 0 ) then 1 else 0 
+--getBlocks n = (n `unsafeShiftR` 3) + if ( (n .&. 0x07) > 0 ) then 1 else 0
+getBlocks n = (n `div` 8) + if ( (n `mod` 8) > 0 ) then 1 else 0
 
 searchCodeAndReturnValue :: V.Vector HuffmanCode -> Word16 -> Maybe Word8
 searchCodeAndReturnValue huffmanCodeList code =
@@ -106,7 +123,7 @@ searchCodeAndReturnValue huffmanCodeList code =
     in
      if (isJust matchCode)
      then
-       let 
+       let
          selectValue (HuffmanCode len pattern value) = value
        in
         Just (selectValue (fromJust matchCode))
@@ -117,13 +134,13 @@ decodeHuffmanDC :: Array Int (V.Vector HuffmanCode) -> StateT DecodeMCUContext (
 decodeHuffmanDC huffmanTbl = do
   --liftIO $ putStrLn $ "decodeHuffmanDC"
   category <- iterHuffman 1 0
-  --liftIO $ putStrLn $ "category=" ++ (show category) 
+  --liftIO $ putStrLn $ "category=" ++ (show category)
   diff <- getBits $ fromIntegral category
   --liftIO $ putStrLn $ "read bits " ++ (showHex $ fromIntegral diff)
   let isNegative = (diff .&. ( 1 `unsafeShiftL` (fromIntegral (category-1)))) == 0
   if isNegative
     then return $ (fromIntegral diff) - ((1 `unsafeShiftL` (fromIntegral category)) - 1)
-    else return $ (fromIntegral diff)  
+    else return $ (fromIntegral diff)
   where
     iterHuffman :: Int -> Word16 ->  StateT DecodeMCUContext (ByteStreamDecoderT DecodeJpegCtx String IO) Word8
     iterHuffman length code = do
@@ -155,54 +172,54 @@ decodeHuffmanAC huffmanTbl = do
                  let transCode = searchCodeAndReturnValue (huffmanTbl ! length) code'
                  if (isJust transCode)
                    then
-                   let 
-                     (runLength, category) = (\c -> (c `unsafeShiftR` 4, c .&. 0x0F)) (fromIntegral $ fromJust transCode)                     
-                     isNegative v = (v .&. (1 `unsafeShiftL` (category-1))) == 0 
+                   let
+                     (runLength, category) = (\c -> (c `unsafeShiftR` 4, c .&. 0x0F)) (fromIntegral $ fromJust transCode)
+                     isNegative v = (v .&. (1 `unsafeShiftL` (category-1))) == 0
                    in
                     case (runLength, category) of
                       (0, 0) -> return (0,0) -- EOB (End of Bits)
-                      (_, _) 
+                      (_, _)
                         | (runLength > 15) -> lift $ throwError "Invalid runlength in AC"
                         | otherwise -> (do
                                            acv <- getBits category
                                            let acv' =
                                                  if (isNegative $ acv)
                                                  then (fromIntegral acv) - ((1 `unsafeShiftL` (fromIntegral category)) - 1)
-                                                 else fromIntegral acv                                           
+                                                 else fromIntegral acv
                                            return (runLength, acv'))
                    else iterHuffman (length+1) (code' `unsafeShiftL` 1))
         else lift $ throwError "Invalid decode Length"
 
-decodeHuffman :: Int -> ComponentIDForScan -> StateT DecodeMCUContext (ByteStreamDecoderT DecodeJpegCtx String IO) Bool
-decodeHuffman  n (ComponentIDForScan cs td ta) = do
+-- Noting -> rearch EOB or Just (runLength, Value)
+decodeHuffman :: Int -> ComponentIDForScan -> StateT DecodeMCUContext (ByteStreamDecoderT DecodeJpegCtx String IO) (Maybe (Int,Int))
+decodeHuffman tc (ComponentIDForScan cs td ta) = do
   decodeJpegCtx <- lift getContext
   --liftIO $ putStrLn $ show (dhtArray decodeJpegCtx)
   --liftIO $ putStrLn $ "n=" ++ (show n) ++ ",Cs=" ++ (show cs) ++ ",Td="++(show td)++ ",Ta="++(show ta)
-  let huffmanTbl = (dhtArray decodeJpegCtx)!( fromIntegral $ if (n == 0) then td else ta, if (n == 0) then 0 else 1);
-  if (n == 0)
+  let huffmanTbl = (dhtArray decodeJpegCtx)!( fromIntegral $ if (tc == 0) then td else ta, if (tc == 0) then 0 else 1);
+  if (tc == 0)
     then (do
              v <- decodeHuffmanDC huffmanTbl
-             liftIO $ putStrLn $ show v
-             return True)
+             return $ Just (0, v))
     else (do
-             (runLength,acv) <- decodeHuffmanAC huffmanTbl          
-             liftIO $ putStrLn $ show (runLength, acv)
-             case (runLength,acv) of
-               (0,0) -> return False
-               (_,_) -> return True)
+             v <- decodeHuffmanAC huffmanTbl
+             case v of
+               (0,0) -> return Nothing
+               (_,_) -> return $ Just v)
 
 parseMCU :: V.Vector Int -> StateT DecodeMCUContext (ByteStreamDecoderT DecodeJpegCtx String IO) ()
 parseMCU sizesOfComp = sizesOfCompIter 0 sizesOfComp
   where
     -- 8x8(64)画素をデコード
-    compIter :: Int -> Int -> Array (Int, Int) Word8 -> StateT DecodeMCUContext (ByteStreamDecoderT DecodeJpegCtx String IO) ()
+    compIter :: Int -> Int -> Array (Int, Int) Int -> StateT DecodeMCUContext (ByteStreamDecoderT DecodeJpegCtx String IO) ()
     compIter indexOfComp n matrixOfData =
       if (n < 64)
       then (do
-               decodeJpegCtx <- lift getContext 
+               decodeJpegCtx <- lift getContext
                let compIDForScan = (compIDs $ scanHeader decodeJpegCtx) `V.unsafeIndex` indexOfComp
-               cont <- decodeHuffman n compIDForScan
-               if cont
+               cont <- decodeHuffman (if (n==0) then 0 else 1) compIDForScan
+               liftIO $ putStrLn $ show cont
+               if (isJust cont)
                  then compIter indexOfComp (n+1) matrixOfData
                  else (do
                           liftIO $ putStrLn $ "find EOB"
@@ -221,9 +238,9 @@ parseMCU sizesOfComp = sizesOfCompIter 0 sizesOfComp
       if (V.null sizesOfComp)
       then return ()
       else (do
-               liftIO $ putStrLn $ (show indexOfComp) ++ ":" ++ (show $ V.head sizesOfComp)               
+               liftIO $ putStrLn $ (show indexOfComp) ++ ":" ++ (show $ V.head sizesOfComp)
                blockIter indexOfComp (V.head sizesOfComp)
-               sizesOfCompIter(indexOfComp + 1) (V.drop 1 sizesOfComp))
+               sizesOfCompIter (indexOfComp + 1) (V.drop 1 sizesOfComp))
 
 decodeMCU :: StateT DecodeMCUContext (ByteStreamDecoderT DecodeJpegCtx String IO) ()
 decodeMCU = do
@@ -238,6 +255,7 @@ decodeMCU = do
   liftIO $ putStrLn $ "vBlocks=" ++ (show vBlocks) ++ ",hBlocks=" ++ (show hBlocks)
   liftIO $ putStrLn $ "maxOfV=" ++ (show maxOfV) ++ ",maxOfH=" ++ (show maxOfH)
   liftIO $ putStrLn $ "numOfVUnit=" ++ (show numOfVUnit) ++ ",numOfHUnit=" ++ (show numOfHUnit)
+  liftIO $ putStrLn $ "DQTs=" ++ (show $ dqts decodeJpegCtx)
   sizesOfComp <- compIter V.empty 0 numOfComps
   parseMCU sizesOfComp
   return ()
@@ -251,8 +269,7 @@ decodeMCU = do
                  liftIO $ putStrLn $ "C="++(show $ fhcC fhc)++",H="++(show $ fhcH fhc) ++  ",V="++(show $ fhcV fhc)
                  compIter (V.snoc v (fromIntegral ((fhcH fhc)*(fhcV fhc)))) (i+1) numOfComps)
         else return v
-                 
-  
+
 decodeEntropy :: (DecodeJpegState -> ByteStreamDecoderT DecodeJpegCtx String IO ()) -> ByteStreamDecoderT DecodeJpegCtx String IO ()
 decodeEntropy decodeJpegIter =
   let
@@ -261,5 +278,5 @@ decodeEntropy decodeJpegIter =
                                             V.empty
                                             V.empty
                                             (array ((0,0),(7,7)) [((i,j), 0)|i<-[0..7],j<-[0..7]])
-  in 
+  in
    evalStateT decodeMCU initDecodeMCUContext

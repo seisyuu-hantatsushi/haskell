@@ -17,15 +17,15 @@ import qualified Data.ByteString as BS
 
 import JpegDecoder.InternalDefs
 
-appendDQTIter :: BS.ByteString -> DQT -> DQT
-appendDQTIter dqtsStr dqt
+parseDQTIter :: BS.ByteString -> DQT -> DQT
+parseDQTIter dqtsStr dqt
   | BS.length dqtsStr == 0  = dqt
   | BS.length dqtsStr == 65 =
     let
-      pq = (fromIntegral $ (BS.head dqtsStr) .&. 0xF0 :: Word8) `unsafeShiftR` 4 
-      tq = fromIntegral $ (BS.head dqtsStr) .&. 0x0F :: Word8 
+      pq = (fromIntegral $ (BS.head dqtsStr) .&. 0xF0 :: Word8) `unsafeShiftR` 4
+      tq = fromIntegral $ (BS.head dqtsStr) .&. 0x0F :: Word8
     in
-     appendDQTIter (BS.drop 1 dqtsStr) (DQT pq tq (dqtQs dqt))
+     parseDQTIter (BS.drop 1 dqtsStr) (DQT pq tq (dqtQs dqt))
   | otherwise =
       let
         newDQT =
@@ -33,23 +33,27 @@ appendDQTIter dqtsStr dqt
             newQS = V.snoc (dqtQs dqt) (fromIntegral $ BS.head dqtsStr :: Word8)
           in
            DQT (dqtPq dqt) (dqtTq dqt) newQS
-      in 
-       appendDQTIter (BS.drop 1 dqtsStr) newDQT 
-        
+      in
+       parseDQTIter (BS.drop 1 dqtsStr) newDQT
+
+parseDQTs :: BS.ByteString -> V.Vector DQT
+parseDQTs dqtsStr = parseDQTsIter dqtsStr V.empty
+  where
+    parseDQTsIter ::  BS.ByteString -> V.Vector DQT -> V.Vector DQT
+    parseDQTsIter dqtsStr dqts
+      | (BS.length dqtsStr) == 0 = dqts
+      | otherwise = parseDQTsIter (BS.drop 65 dqtsStr) (V.snoc dqts (parseDQTIter (BS.take 65 dqtsStr) (DQT 0 0 V.empty)))
+
 appendDQT :: BS.ByteString -> ByteStreamDecoderT DecodeJpegCtx String IO ()
 appendDQT dqtsStr
   | (BS.length dqtsStr) `mod` 65 /= 0 =
     throwError "invalid DQT length"
-  | (BS.length dqtsStr) > 65 =
-    throwError "need to implement, more than 2 DQT in frame."
-  | otherwise = --本当はさらに(BS.length dqtsStr)を65で割った回数でLoop
-    (do
-        let newDQT = appendDQTIter dqtsStr (DQT 0 0 V.empty)  
-        ctx <- getContext
-        putContext $ updateDecodeJpegCtx ctx (CtxDqts $ V.snoc (dqts ctx) newDQT)
-        liftIO $ putStrLn $ show newDQT
-        return ()
-    )
+  | otherwise = do
+    let newDQTs = parseDQTs dqtsStr
+    ctx <- getContext
+    putContext $ updateDecodeJpegCtx ctx $ CtxDqts $ V.concat [ (dqts ctx), newDQTs ]
+    --liftIO $ putStrLn $ show newDQTs
+    return ()
 
 parseDQT :: (DecodeJpegState -> ByteStreamDecoderT DecodeJpegCtx String IO ()) -> ByteStreamDecoderT DecodeJpegCtx String IO ()
 parseDQT decodeJpegIter = do
